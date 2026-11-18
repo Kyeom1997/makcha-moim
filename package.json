@@ -1,0 +1,11 @@
+{
+  "name": "makcha-moim",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "data": "node --env-file=.env scripts/build-data.js",
+    "test": "node --test",
+    "dev": "python3 -m http.server 5180"
+  }
+}
