@@ -26,6 +26,7 @@ const state = {
   walk: Number(query.get('w')) || 10,
   date: query.get('d') || new Date().toLocaleDateString('sv-SE'),
   holiday: query.get('h') === '1',
+  pick: query.get('s') ?? '', // 큰 표로 보고 있는 장소. 비어 있으면 가장 늦게까지 있을 수 있는 곳
 }
 $('walk').value = String(state.walk)
 $('date').value = state.date
@@ -45,7 +46,7 @@ async function load() {
   data = loaded
   lines = new Map((data?.stations ?? []).map((s) => [s.name, s.lines]))
   $('notice').hidden = Boolean(data)
-  $('notice').textContent = `${WEEKS[week]} 시간표 데이터가 없습니다. 인증키를 .env에 넣고 npm run data를 실행하세요.`
+  $('notice').textContent = `${WEEKS[week]} 시간표 데이터를 불러오지 못했습니다.`
   $('source').textContent = data
     ? `${data.source} · ${data.generated} 수집 · 환승 ${data.transfer}분 가정 · 역에서 집까지는 계산하지 않습니다.`
     : ''
@@ -61,7 +62,14 @@ function save() {
   })
   if (state.holiday) q.set('h', '1')
   if (state.extra.length) q.set('c', state.extra.join(','))
+  if (state.pick) q.set('s', state.pick)
   history.replaceState(null, '', `?${q}`)
+}
+
+/** "강남역"처럼 적어도 "강남"으로 받음. 단 "서울역"처럼 역명 자체가 '역'으로 끝나면 그대로 둠 */
+function stationInput(text) {
+  const name = text.trim()
+  return lines.has(name) ? name : name.replace(/역$/, '')
 }
 
 function renderPeople() {
@@ -72,7 +80,7 @@ function renderPeople() {
         value: person.name,
         placeholder: '이름',
         autocomplete: 'off',
-        ariaLabel: `참석자 ${i + 1} 이름`,
+        ariaLabel: `승객 ${i + 1} 이름`,
         oninput: (e) => {
           person.name = e.target.value.replace(/[~,]/g, '')
           renderResults()
@@ -82,10 +90,10 @@ function renderPeople() {
         value: person.home,
         placeholder: '집 근처 역',
         autocomplete: 'off',
-        ariaLabel: `참석자 ${i + 1} 집 근처 역`,
+        ariaLabel: `승객 ${i + 1} 집 근처 역`,
         ariaInvalid: String(unknown),
         onchange: (e) => {
-          person.home = e.target.value.trim().replace(/역$/, '')
+          person.home = stationInput(e.target.value)
           renderPeople()
           renderResults()
         },
@@ -95,7 +103,7 @@ function renderPeople() {
         type: 'button',
         className: 'remove',
         textContent: '×',
-        ariaLabel: `참석자 ${i + 1} 삭제`,
+        ariaLabel: `승객 ${i + 1} 삭제`,
         disabled: state.people.length <= 2,
         onclick: () => {
           state.people.splice(i, 1)
@@ -104,17 +112,28 @@ function renderPeople() {
         },
       })
       const row = el('li', {}, name, home, remove)
-      if (unknown) row.append(el('p', { className: 'error', textContent: '목록에 없는 역입니다. 서울교통공사 구간만 지원합니다.' }))
+      if (unknown) row.append(el('p', { className: 'error', textContent: '목록에 없는 역입니다. 1~9호선 역만 됩니다.' }))
       return row
     }),
   )
 }
 
-function leaveText(leave) {
-  if (leave === WALK_HOME) return '걸어서'
-  if (leave === NO_TRAIN) return '막차 없음'
-  return hhmm(leave)
-}
+const timeText = (min) => (min === WALK_HOME ? '걸어서' : min === NO_TRAIN ? '막차 없음' : hhmm(min))
+
+/** 그 역의 노선색 띠 */
+const band = (place) =>
+  el(
+    'span',
+    { className: 'band', ariaHidden: 'true' },
+    ...(lines.get(place) ?? []).map((n) => {
+      const stripe = el('i')
+      stripe.style.background = `var(--line-${n})`
+      return stripe
+    }),
+  )
+
+/** 일찍 일어나야 하는 사람부터 */
+const byLeave = (result) => [...result.leaves].sort((a, b) => a.leave - b.leave)
 
 /** 해산 시각에 울리는 캘린더 일정(.ics). 자정을 넘기면 다음 날짜 */
 function downloadIcs(result) {
@@ -123,7 +142,7 @@ function downloadIcs(result) {
   const stamp = (d) =>
     `${d.toLocaleDateString('sv-SE').replaceAll('-', '')}T${d.toTimeString().slice(0, 8).replaceAll(':', '')}`
   const end = new Date(start.getTime() + 5 * 60000)
-  const who = result.leaves.map((l) => `${l.name || l.home} ${leaveText(l.board)} 승차`).join(', ')
+  const who = result.leaves.map((l) => `${l.name || l.home} ${timeText(l.board)} 승차`).join(', ')
   const ics = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
@@ -151,65 +170,139 @@ function downloadIcs(result) {
   URL.revokeObjectURL(link.href)
 }
 
+const emptyTicket = (title, body) =>
+  el(
+    'article',
+    { className: 'ticket empty' },
+    el('span', { className: 'band' }),
+    el('div', { className: 'main' }, el('strong', { textContent: title }), body),
+    el('div', { className: 'stub', ariaHidden: 'true', textContent: '--:--' }),
+  )
+
+let printed = '' // 큰 표가 바뀔 때만 등장 동작을 줌 (이름을 타이핑할 때마다 깜빡이지 않게)
+function bigTicket(result, best) {
+  const leaves = byLeave(result)
+  const earliest = leaves.find((l) => l.leave !== WALK_HOME)?.leave
+  const isTop = result === best
+  const key = `${result.place}|${result.end}`
+  const ticket = el(
+    'article',
+    { className: `ticket big${key === printed ? '' : ' fresh'}` },
+    band(result.place),
+    el(
+      'div',
+      { className: 'main' },
+      el('span', { className: 'lbl', textContent: '모이는 곳' }),
+      el('div', { className: 'place', textContent: result.place }),
+      el('span', { className: 'lbl', textContent: '해산' }),
+      result.end === WALK_HOME
+        ? el('div', { className: 'time words', textContent: '시간 제한 없음' })
+        : el('div', { className: 'time', textContent: hhmm(result.end) }),
+      el(
+        'dl',
+        {},
+        ...leaves.map((l) =>
+          el(
+            'div',
+            {},
+            el('dt', { textContent: l.name || l.home }),
+            el('dd', { className: l.leave === earliest ? 'first' : '', textContent: timeText(l.leave) }),
+          ),
+        ),
+      ),
+      ...(result.end === WALK_HOME
+        ? []
+        : [
+            el('button', {
+              type: 'button',
+              className: 'text',
+              textContent: '캘린더에 해산 알림 넣기',
+              onclick: () => downloadIcs(result),
+            }),
+          ]),
+    ),
+    el(
+      'div',
+      { className: 'stub' },
+      isTop
+        ? el('span', { className: 'top', textContent: '가장 늦게까지' })
+        : el('span', { textContent: `가장 늦은 곳보다 ${best.end - result.end}분 일찍` }),
+    ),
+  )
+  printed = key
+  return ticket
+}
+
+function rowTicket(result) {
+  const none = result.end === NO_TRAIN
+  const leaves = byLeave(result)
+  const same = leaves.every((l) => l.leave === leaves[0].leave)
+  const who = none
+    ? `${leaves.filter((l) => l.leave === NO_TRAIN).map((l) => l.name || l.home).join(', ')} 귀가 불가`
+    : same
+      ? `모두 ${timeText(leaves[0].leave)}`
+      : leaves.map((l) => `${l.name || l.home} ${timeText(l.leave)}`).join(' · ')
+  const inner = [
+    band(result.place),
+    el('span', { className: 'main' }, el('span', { className: 'place', textContent: result.place }), el('small', { textContent: who })),
+    el('span', { className: 'stub', textContent: none ? '막차 없음' : timeText(result.end) }),
+  ]
+  // 막차가 없는 곳은 고를 수 없으니 버튼이 아님
+  return el(
+    'li',
+    {},
+    none
+      ? el('div', { className: 'ticket row none' }, ...inner)
+      : el(
+          'button',
+          {
+            type: 'button',
+            className: 'ticket row',
+            ariaLabel: `${result.place}, 해산 ${timeText(result.end)}. 이 곳으로 보기`,
+            onclick: () => {
+              state.pick = result.place
+              renderResults()
+              scrollTo({ top: 0, behavior: 'smooth' })
+            },
+          },
+          ...inner,
+        ),
+  )
+}
+
 function renderResults() {
   save()
-  $('weekend').hidden = week === '1'
-  $('weekend').textContent = `${WEEKS[week]} 시간표로 계산했습니다.`
+  const date = new Date(`${state.date}T00:00:00`)
+  $('date-label').textContent =
+    `${state.date.replaceAll('-', '.')} ${'일월화수목금토'[date.getDay()]}` + (week === '1' ? '' : ` · ${WEEKS[week]} 시간표`)
 
   const people = state.people.filter((p) => lines.has(p.home))
-  const ready = Boolean(data) && people.length >= 2
-  $('empty').hidden = ready
-  $('copy').hidden = !ready
-  if (!ready) return $('results').replaceChildren()
+  const results = data && people.length >= 2 ? rank(data, people, [...new Set([...state.extra, ...HUBS])], state.walk).slice(0, SHOWN) : []
+  const usable = results.filter((r) => r.end !== NO_TRAIN)
+  const best = usable[0]
+  $('others-title').hidden = !best
+  $('copy').hidden = !best
 
-  const results = rank(data, people, [...new Set([...state.extra, ...HUBS])], state.walk)
-  $('results').replaceChildren(
-    ...results.slice(0, SHOWN).map((result, i) => {
-      const none = result.end === NO_TRAIN
-      const earliest = Math.min(...result.leaves.map((l) => (l.leave === NO_TRAIN ? Infinity : l.leave)))
-      const who = el('p', { className: 'who' })
-      result.leaves.forEach((l, j) => {
-        const text = `${l.name || l.home} ${leaveText(l.leave)}`
-        // 가장 먼저 일어나야 하는 사람(해산 시각을 정하는 사람)을 굵게
-        who.append(j ? ' · ' : '', l.leave === earliest || l.leave === NO_TRAIN ? el('b', { textContent: text }) : text)
-      })
-      const row = el(
-        'li',
-        { className: none ? 'none' : '' },
-        el(
-          'div',
-          { className: 'place' },
-          result.place,
-          ...(lines.get(result.place) ?? []).map((n) => {
-            const badge = el('span', { className: 'line', textContent: n, ariaLabel: `${n}호선` })
-            badge.style.background = `var(--line-${n})`
-            return badge
-          }),
-        ),
-        el(
-          'div',
-          { className: 'time' },
-          ...(none
-            ? ['막차 없음']
-            : result.end === WALK_HOME
-              ? ['제한 없음']
-              : [el('small', { textContent: i === 0 ? '가장 늦게까지' : '해산' }), hhmm(result.end)]),
-        ),
-        who,
-      )
-      if (!none && result.end !== WALK_HOME) {
-        row.append(
-          el('button', {
-            type: 'button',
-            className: 'ghost ics',
-            textContent: '캘린더에 해산 알림 추가',
-            onclick: () => downloadIcs(result),
-          }),
-        )
-      }
-      return row
-    }),
-  )
+  if (!best) {
+    printed = ''
+    $('others').replaceChildren()
+    return $('ticket').replaceChildren(
+      results.length
+        ? emptyTicket('끊을 수 있는 표가 없습니다', '전원이 막차로 귀가할 수 있는 장소가 없습니다. 날짜나 승객을 바꿔 보세요.')
+        : emptyTicket('아직 표가 없습니다', '아래에 승객 두 명 이상의 집 근처 역을 적으면, 모두가 막차로 귀가할 수 있는 해산 시각을 표로 끊어 드립니다.'),
+    )
+  }
+
+  const picked = usable.find((r) => r.place === state.pick) ?? best
+  $('ticket').replaceChildren(bigTicket(picked, best))
+  $('others').replaceChildren(...results.filter((r) => r !== picked).map(rowTicket))
+}
+
+// 날짜나 공휴일 표시가 바뀌면 시간표가 달라질 수 있음
+async function reload() {
+  if (!(await load())) return
+  renderPeople()
+  renderResults()
 }
 
 $('add-person').onclick = () => {
@@ -221,12 +314,6 @@ $('walk').onchange = (e) => {
   state.walk = Number(e.target.value)
   renderResults()
 }
-// 날짜나 공휴일 표시가 바뀌면 시간표가 달라질 수 있음
-async function reload() {
-  if (!(await load())) return
-  renderPeople()
-  renderResults()
-}
 $('date').onchange = (e) => {
   state.date = e.target.value || state.date
   reload()
@@ -236,15 +323,15 @@ $('holiday').onchange = (e) => {
   reload()
 }
 $('extra').onchange = (e) => {
-  const place = e.target.value.trim().replace(/역$/, '')
+  const place = stationInput(e.target.value)
   if (lines.has(place) && !state.extra.includes(place)) state.extra.unshift(place)
   e.target.value = ''
   renderResults()
 }
 $('copy').onclick = async () => {
   await navigator.clipboard.writeText(location.href)
-  $('copy').textContent = '복사했습니다'
-  setTimeout(() => ($('copy').textContent = '이 결과 링크 복사'), 1500)
+  $('copy').textContent = '링크를 복사했습니다'
+  setTimeout(() => ($('copy').textContent = '표 보내기'), 1500)
 }
 
 reload()

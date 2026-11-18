@@ -4,60 +4,68 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>막차 모임</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231c2a33'/><rect x='5' y='9' width='22' height='14' rx='2.5' fill='%23fff'/><path d='M20 9v14' stroke='%231c2a33' stroke-width='1.5' stroke-dasharray='2 2'/></svg>"
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css"
+    />
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <header class="masthead">
+    <header class="head">
       <h1>막차 모임</h1>
-      <p>전원이 막차로 집에 갈 수 있는 시각을 계산합니다.</p>
+      <span id="date-label"></span>
     </header>
 
     <main>
       <p id="notice" class="notice" hidden></p>
 
-      <section>
-        <h2>누가 오나요</h2>
-        <ol id="people" class="people"></ol>
-        <button id="add-person" type="button" class="ghost">참석자 추가</button>
-      </section>
-
       <section aria-live="polite">
-        <h2>언제까지 있을 수 있나</h2>
-        <p id="empty" class="hint">참석자 두 명 이상의 집 근처 역을 넣으면 계산합니다.</p>
-        <p id="weekend" class="hint" hidden></p>
-        <ol id="results" class="results"></ol>
-        <button id="copy" type="button" class="ghost" hidden>이 결과 링크 복사</button>
+        <div id="ticket"></div>
+        <h2 id="others-title" hidden>다른 곳에서 모이면</h2>
+        <ol id="others"></ol>
       </section>
 
-      <section class="conditions">
+      <section class="slip">
+        <h2>승객</h2>
+        <ol id="people" class="people"></ol>
+        <button id="add-person" type="button" class="text">+ 승객 추가</button>
+
         <h2>조건</h2>
-        <label>
-          모임 날짜
-          <input id="date" type="date" />
-        </label>
-        <label>
-          역까지 걷는 시간
-          <select id="walk">
-            <option value="5">5분</option>
-            <option value="10">10분</option>
-            <option value="15">15분</option>
-            <option value="20">20분</option>
-          </select>
-        </label>
-        <label class="check">
-          <input id="holiday" type="checkbox" />
-          이날은 공휴일입니다 (일요일 시간표로 계산)
-        </label>
-        <label>
-          후보 장소 추가
-          <input id="extra" list="stations" placeholder="역 이름" autocomplete="off" />
-        </label>
+        <div class="fields">
+          <label>
+            모임 날짜
+            <input id="date" type="date" />
+          </label>
+          <label>
+            역까지 걷는 시간
+            <select id="walk">
+              <option value="5">5분</option>
+              <option value="10">10분</option>
+              <option value="15">15분</option>
+              <option value="20">20분</option>
+            </select>
+          </label>
+          <label class="check">
+            <input id="holiday" type="checkbox" />
+            이날은 공휴일 (일요일 시간표로 계산)
+          </label>
+          <label class="wide">
+            후보 장소 추가
+            <input id="extra" list="stations" placeholder="역 이름" autocomplete="off" />
+          </label>
+        </div>
       </section>
+
+      <p id="source" class="source"></p>
     </main>
 
-    <footer>
-      <p id="source"></p>
-    </footer>
+    <div class="sendbar">
+      <button id="copy" type="button" hidden>표 보내기</button>
+    </div>
 
     <datalist id="stations"></datalist>
     <script type="module" src="app.js"></script>
